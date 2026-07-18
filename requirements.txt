@@ -1,8 +1,5 @@
 streamlit
-opencv-python-headless
-numpy
+google-generativeai
 Pillow
-pytesseract
 pandas
 openpyxl
-pyzbar
