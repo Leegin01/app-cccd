@@ -1,4 +1,0 @@
-tesseract-ocr
-tesseract-ocr-vie
-libgl1-mesa-glx
-libzbar0
