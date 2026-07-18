@@ -17,7 +17,7 @@ import base64
 
 st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Đa Lớp", page_icon="🪪", layout="wide")
 st.title("🪪 Hệ thống Trích xuất & So khớp CCCD Tự Động")
-st.markdown("Kiến trúc Tứ lõi: **QR Code** ➔ **[ChatGPT 4o / Gemini 3.5]** ➔ Dự phòng **EasyOCR AI (Offline)**.")
+st.markdown("Kiến trúc Ngũ lõi: **QR Code** ➔ **[Gemini 3.5 / ChatGPT 4o / DeepSeek]** ➔ Dự phòng **EasyOCR AI (Offline)**.")
 
 # KHỞI TẠO EASYOCR (Chạy 1 lần duy nhất và lưu vào bộ nhớ đệm hệ thống)
 @st.cache_resource
@@ -30,15 +30,17 @@ reader = load_easyocr()
 try:
     gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
     openai_api_key = st.secrets.get("OPENAI_API_KEY", "")
+    deepseek_api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 except:
     gemini_api_key = ""
     openai_api_key = ""
+    deepseek_api_key = ""
 
 # Thiết kế khu vực tùy chọn Động cơ AI và Loại giấy tờ cần quét
 col1, col2 = st.columns(2)
 with col1:
     ai_engine = st.radio("🧠 Chọn động cơ Trí tuệ nhân tạo (AI Engine):", 
-                         ("Google Gemini 3.5 Flash (Miễn phí)", "OpenAI GPT-4o (Cần có số dư API)"))
+                         ("Google Gemini 3.5 Flash (Miễn phí)", "OpenAI GPT-4o (Cần có số dư API)", "DeepSeek AI (Tối ưu chi phí)"))
 with col2:
     loai_giay_to = st.selectbox("📁 Chọn loại giấy tờ nghiệp vụ lễ tân:",
                                 ("Căn cước công dân / VNeID (Quét hỗn hợp 2 mặt)", "Hộ chiếu (Passport - Việt Nam & Nước ngoài)"))
@@ -53,7 +55,7 @@ uploaded_files = st.file_uploader(
 # KHU VỰC 1: CÁC HÀM XỬ LÝ ẢNH & ĐỊNH DẠNG DỮ LIỆU
 # ==========================================
 def encode_image_to_base64(image_file):
-    """Mã hóa ảnh cấu trúc dữ liệu sang dạng Base64 phục vụ cho luồng OpenAI Vision API"""
+    """Mã hóa ảnh cấu trúc dữ liệu sang dạng Base64 phục vụ cho luồng Vision API"""
     return base64.b64encode(image_file.getvalue()).decode('utf-8')
 
 def order_points(pts):
@@ -97,18 +99,26 @@ if uploaded_files:
     st.info(f"🔗 Hệ thống ghi nhận {len(uploaded_files)} tệp ảnh sẵn sàng đưa vào tiến trình.")
     
     if st.button("🚀 Bắt đầu trích xuất & So khớp dữ liệu", type="primary"):
+        # Kiểm tra điều kiện API Key tương ứng
         if "Gemini" in ai_engine and not gemini_api_key:
-            st.error("🚨 Không tìm thấy cấu hình Gemini API Key trong két sắt bảo mật Secrets!")
+            st.error("🚨 Không tìm thấy cấu hình Gemini API Key trong Secrets!")
             st.stop()
         elif "GPT-4o" in ai_engine and not openai_api_key:
-            st.error("🚨 Không tìm thấy cấu hình OpenAI API Key trong két sắt bảo mật Secrets!")
+            st.error("🚨 Không tìm thấy cấu hình OpenAI API Key trong Secrets!")
+            st.stop()
+        elif "DeepSeek" in ai_engine and not deepseek_api_key:
+            st.error("🚨 Không tìm thấy cấu hình DeepSeek API Key trong Secrets!")
             st.stop()
             
+        # Khởi tạo luồng kết nối cho từng mục
         if "Gemini" in ai_engine:
             genai.configure(api_key=gemini_api_key)
             model_gemini = genai.GenerativeModel('gemini-3.5-flash')
-        else:
+        elif "GPT-4o" in ai_engine:
             client_openai = OpenAI(api_key=openai_api_key)
+        else:
+            # Khởi tạo client kết nối đến Endpoint chính thức của DeepSeek
+            client_deepseek = OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com")
             
         matched_database = {}
         unmatched_records = [] 
@@ -146,7 +156,7 @@ if uploaded_files:
                             time.sleep(0.3)
                 
                 # ---------------------------------------------------------
-                # LỚP PHÒNG THỦ 2: SỬ DỤNG SIÊU AI (GEMINI HOẶC GPT-4O)
+                # LỚP PHÒNG THỦ 2: SỬ DỤNG SIÊU AI ĐÁM MÂY (GEMINI / GPT-4O / DEEPSEEK)
                 # ---------------------------------------------------------
                 if not qr_extracted:
                     prompt = """
@@ -171,7 +181,7 @@ if uploaded_files:
                             response = model_gemini.generate_content([prompt, pil_img])
                             clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
                             extracted_data = json.loads(clean_json)
-                        else:
+                        elif "GPT-4o" in ai_engine:
                             base64_image = encode_image_to_base64(up_file)
                             response = client_openai.chat.completions.create(
                                 model="gpt-4o",
@@ -188,21 +198,37 @@ if uploaded_files:
                             )
                             clean_json = response.choices[0].message.content.strip()
                             extracted_data = json.loads(clean_json)
+                        else:
+                            # Chạy bằng mô hình DeepSeek Vision/Chat nâng cao thông qua mã hóa Base64
+                            base64_image = encode_image_to_base64(up_file)
+                            response = client_deepseek.chat.completions.create(
+                                model="deepseek-chat", # Hoặc deepseek-reasoner tùy gói nâng cấp
+                                messages=[
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": prompt},
+                                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                                        ]
+                                    }
+                                ],
+                                response_format={ "type": "json_object" }
+                            )
+                            clean_json = response.choices[0].message.content.strip()
+                            extracted_data = json.loads(clean_json)
                             
                     except Exception as api_err:
-                        # GHI NHẬN LỖI: Tự động kích hoạt cơ chế chuyển mạch dự phòng offline
-                        status_text.text(f"⚠️ Động cơ mạng gặp sự cố. Hệ thống lập tức kích hoạt lõi EasyOCR Offline cho tệp {up_file.name}...")
+                        status_text.text(f"⚠️ {ai_engine} gặp sự cố hoặc nghẽn mạch. Hệ thống tự động kích hoạt lõi EasyOCR Offline...")
                         use_easyocr_fallback = True
                     
                     # ---------------------------------------------------------
-                    # LỚP PHÒNG THỦ 3: LÕI EASYOCR OFFLINE VÀ BỘ LỌC REGEX CHUYÊN SÂU
+                    # LỚP PHÒNG THỦ 3: LÕI EASYOCR OFFLINE VÀ BỘ LỌC REGEX DỰ PHÒNG
                     # ---------------------------------------------------------
                     if use_easyocr_fallback:
                         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
                             f.write(up_file.getbuffer())
                             temp_path = f.name
                         
-                        # Sử dụng EasyOCR quét dữ liệu thô cục bộ không cần mạng
                         results = reader.readtext(temp_path, detail=0)
                         raw_text = "\n".join(results)
                         
@@ -216,7 +242,6 @@ if uploaded_files:
                             "Đặc điểm nhân dạng": "Trích xuất cục bộ bằng thuật toán EasyOCR"
                         }
                         
-                        # Phân tích chuỗi văn bản thô dựa trên biểu thức chính quy Regex
                         if "Căn cước" in loai_giay_to:
                             clean_text_no_space = raw_text.replace(" ", "")
                             id_matches = re.findall(r"\d{12}", clean_text_no_space)
@@ -228,15 +253,13 @@ if uploaded_files:
                                     extracted_data["Loại mặt"] = "Mặt trước"
                             
                             dob_matches = re.findall(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
-                            if dob_matches: 
-                                extracted_data["Ngày tháng năm sinh"] = dob_matches[0]
+                            if dob_matches: extracted_data["Ngày tháng năm sinh"] = dob_matches[0]
                                 
                             name_matches = re.findall(r"\b[A-ZÀ-Ỹ]{2,}(?:\s+[A-ZÀ-Ỹ]{2,})+\b", raw_text)
                             if name_matches:
                                 system_words = ["CỘNG HÒA", "XÃ HỘI", "CHỦ NGHĨA", "VIỆT NAM", "CĂN CƯỚC", "CÔNG DÂN", "CỤC TRƯỞNG"]
                                 filtered_names = [n for n in name_matches if n not in system_words]
-                                if filtered_names:
-                                    extracted_data["Họ và tên"] = filtered_names[0]
+                                if filtered_names: extracted_data["Họ và tên"] = filtered_names[0]
                         else:
                             clean_text_passport = raw_text.replace(" ", "").upper()
                             passport_matches = re.findall(r"[A-Z]\d{7}", clean_text_passport)
@@ -292,10 +315,10 @@ if uploaded_files:
             
             progress_bar.progress((idx + 1) / len(uploaded_files))
         
-        status_text.text(f"✅ Đã hoàn thành quy trình cấu trúc dữ liệu!")
+        status_text.text(f"✅ Đã hoàn thành quy trình trích xuất dữ liệu bằng {ai_engine}!")
         
         # ---------------------------------------------------------
-        # KHU VỰC 3: DỰNG KHUNG HÌNH TABLE VÀ ĐÓNG GÓI EXCEL REPORT
+        # KHU VỰC 3: DỰNG BẢNG VÀ ĐÓNG GÓI EXCEL REPORT
         # ---------------------------------------------------------
         final_rows = []
         stt = 1
@@ -339,7 +362,7 @@ if uploaded_files:
             st.download_button(
                 label="📥 Bấm vào đây để tải file Excel đối sánh (.xlsx)",
                 data=excel_buffer.getvalue(),
-                file_name="BaoCao_SoKhop_HeThong_TongHop.xlsx",
+                file_name="BaoCao_SoKhop_HeThong_DeepSeek.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )
