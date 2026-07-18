@@ -9,14 +9,11 @@ st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Gemini AI", page_ic
 st.title("🪪 Hệ thống Trích xuất Giấy tờ Hàng loạt bằng Gemini AI")
 st.markdown("Ứng dụng sử dụng lõi công nghệ tân tiến nhất **Gemini 3.5 Flash**, tối ưu hóa tốc độ xử lý hàng loạt và độ chính xác.")
 
-# CẤU HÌNH BẢO MẬT API KEY:
+# CẤU HÌNH BẢO MẬT API KEY (CHẠY NGẦM KHÔNG HIỂN THỊ LÊN GIAO DIỆN):
 try:
-    default_api_key = st.secrets["GEMINI_API_KEY"]
+    api_key = st.secrets["GEMINI_API_KEY"]
 except:
-    default_api_key = ""
-
-# Ô nhập key dự phòng trực tiếp trên giao diện web
-api_key = st.text_input("🔑 Google Gemini API Key (Đã tự động cấu hình hoặc nhập mới):", value=default_api_key, type="password")
+    api_key = ""
 
 # Lựa chọn loại giấy tờ cần quét cho đợt này
 loai_giay_to = st.selectbox(
@@ -36,12 +33,12 @@ if uploaded_files:
     
     if st.button("🚀 Bắt đầu trích xuất bằng Gemini AI", type="primary"):
         if not api_key:
-            st.warning("Vui lòng cấu hình hoặc nhập Gemini API Key để kích hoạt hệ thống!")
+            st.error("🚨 Không tìm thấy API Key! Vui lòng cấu hình GEMINI_API_KEY trong phần quản lý Secrets của Streamlit Cloud.")
         else:
             # Kích hoạt kết nối đến siêu máy tính Google Gemini
             genai.configure(api_key=api_key)
             
-            # ĐÃ CẬP NHẬT: Cấu hình mô hình thế hệ mới nhất Gemini 3.5 Flash
+            # Cấu hình mô hình thế hệ mới nhất Gemini 3.5 Flash
             model = genai.GenerativeModel('gemini-3.5-flash')
             
             all_results = [] # Mảng lưu dữ liệu tổng hợp để xuất Excel
