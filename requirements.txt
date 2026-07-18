@@ -1,9 +1,10 @@
 streamlit
 google-generativeai
+openai
 Pillow
 pandas
 openpyxl
 pyzbar
 opencv-python-headless
 pytesseract
-openai
+easyocr
