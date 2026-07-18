@@ -6,3 +6,4 @@ openpyxl
 pyzbar
 opencv-python-headless
 pytesseract
+openai
