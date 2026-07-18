@@ -11,7 +11,7 @@ import time
 
 st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Cấu Trúc Cao", page_icon="🪪", layout="wide")
 st.title("🪪 Hệ thống Trích xuất & So khớp CCCD Hai Mặt Tự Động")
-st.markdown("Hệ thống thông minh kết hợp **Quét mã QR**, **Siêu AI Gemini 3.1 Pro (Phân tích chuyên sâu)** và thuật toán chống nghẽn mạng (Auto-Retry).")
+st.markdown("Hệ thống thông minh kết hợp **Quét mã QR**, **Siêu AI Gemini Pro (Phân tích chuyên sâu)** và thuật toán chống nghẽn mạng (Auto-Retry).")
 
 # CẤU HÌNH BẢO MẬT API KEY (CHẠY NGẦM):
 try:
@@ -37,12 +37,12 @@ if uploaded_files:
     
     if st.button("🚀 Bắt đầu trích xuất & So khớp dữ liệu", type="primary"):
         if not api_key:
-            st.error("🚨 Không tìm thấy API Key! Vui lòng cấu hình GEMINI_API_KEY trong phần Secrets của Streamlit Cloud.")
+            st.error("🚨 Không tìm thấy API Key! Vui lòng cấu hình GEMINI_API_KEY trong phần quản lý Secrets của Streamlit Cloud.")
         else:
             genai.configure(api_key=api_key)
             
-            # ĐÃ CẬP NHẬT: Sử dụng mô hình chuyên sâu Gemini 3.1 Pro theo yêu cầu
-            model = genai.GenerativeModel('gemini-3.1-pro')
+            # ĐÃ SỬA LỖI: Thay đổi tên định danh chính xác của dòng Pro phục vụ API v1/v1beta
+            model = genai.GenerativeModel('gemini-1.5-pro')
             
             matched_database = {}
             unmatched_records = [] 
@@ -51,7 +51,7 @@ if uploaded_files:
             status_text = st.empty()
             
             for idx, up_file in enumerate(uploaded_files):
-                status_text.text(f"🔍 Gemini 3.1 Pro đang phân tích tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
+                status_text.text(f"🔍 Gemini Pro đang phân tích tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
                 
                 try:
                     pil_img = Image.open(up_file)
@@ -82,7 +82,7 @@ if uploaded_files:
                                 time.sleep(2)
                     
                     # ---------------------------------------------------------
-                    # THAO TÁC 2: DÙNG GEMINI 3.1 PRO (BẢO VỆ BẰNG AUTO-RETRY)
+                    # THAO TÁC 2: DÙNG GEMINI PRO (BẢO VỆ BẰNG AUTO-RETRY)
                     # ---------------------------------------------------------
                     if not qr_extracted:
                         if "Căn cước" in loai_giay_to:
@@ -119,26 +119,25 @@ if uploaded_files:
                         
                         # VÒNG LẶP CHỐNG NGHẼN MẠNG DÀNH CHO DÒNG PRO (TỰ ĐỘNG CHỜ NẾU BỊ LỖI 429)
                         success = False
-                        for attempt in range(3): # Cho phép thử tối đa 3 lần
+                        for attempt in range(3): 
                             try:
                                 response = model.generate_content([prompt, pil_img])
                                 clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
                                 extracted_data = json.loads(clean_json)
                                 success = True
-                                break # Nếu API đọc thành công thì thoát vòng lặp Retry ngay
+                                break 
                             except Exception as api_err:
                                 error_msg = str(api_err)
-                                # Bắt đúng lỗi 429 hoặc Quota để yêu cầu máy chủ "thở"
                                 if "429" in error_msg or "quota" in error_msg.lower():
                                     status_text.text(f"⏳ Mô hình Pro cần xử lý chậm lại! Đang tự động chờ 45 giây làm mát API (Lần thử {attempt+1}/3)...")
-                                    time.sleep(45) # Ép máy chủ ngủ 45 giây rồi mới chạy tiếp
+                                    time.sleep(45) 
                                 else:
-                                    raise api_err # Nếu là lỗi khác thì ném ra ngoài để báo lỗi
+                                    raise api_err 
                         
                         if not success:
                             raise Exception("Đã hết số lần thử lại tự động do máy chủ Google quá tải.")
                         
-                        # Giãn cách 3 giây giữa mỗi bức ảnh để API không bị dồn dập
+                        # Ép nghỉ 3 giây giữa mỗi đợt ảnh để bảo vệ Tokens phút của dòng Pro
                         time.sleep(3)
 
                     # ---------------------------------------------------------
@@ -179,7 +178,7 @@ if uploaded_files:
                 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            status_text.text("✅ Đã hoàn thành phân tích toàn bộ dữ liệu bằng Gemini 3.1 Pro!")
+            status_text.text("✅ Đã hoàn thành phân tích toàn bộ dữ liệu bằng Gemini Pro!")
             
             # ---------------------------------------------------------
             # KHU VỰC 3: DỰNG BẢNG & ĐÓNG GÓI EXCEL CHUẨN CÔNG NGHIỆP
@@ -200,7 +199,7 @@ if uploaded_files:
                     "Tên File Mặt Sau": "Lỗi đọc dữ liệu hình ảnh",
                     "Họ và tên": err_data.get("Họ và tên", "Mờ chữ"),
                     "Ngày tháng năm sinh": err_data.get("Ngày tháng năm sinh", "-"),
-                    "Địa chỉ thường trú / Quốc tịch": err_data.get("Địa thường trú / Quốc tịch", "-"),
+                    "Địa chỉ thường trú / Quốc tịch": err_data.get("Địa chỉ thường trú / Quốc tịch", "-"),
                     "Ngày cấp": err_data.get("Ngày cấp", "-"),
                     "Đặc điểm nhân dạng": err_data.get("Đặc điểm nhân dạng", "-"),
                     "Trạng Thái So Khớp": "❌ Lỗi trích xuất"
