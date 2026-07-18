@@ -5,7 +5,7 @@ st.set_page_config(page_title="AI Scan CCCD", page_icon="🪪")
 st.title("🪪 Trích xuất thông tin CCCD/VNeID")
 
 # THAY CHUỖI API KEY CỦA EM VÀO ĐÂY
-API_KEY = "DÁN_API_KEY_CỦA_EM_VÀO_ĐÂY"
+API_KEY = "47H23gkjeYnzE1xABP1AkxX3N3WyAE8y"
 
 st.markdown("Hướng dẫn: Tải ảnh thẻ lên, hệ thống đám mây sẽ xử lý trong vài giây.")
 up_file = st.file_uploader("Tải ảnh thẻ lên", type=['jpg', 'png', 'jpeg'])
