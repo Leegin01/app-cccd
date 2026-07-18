@@ -7,10 +7,11 @@ import json
 from pyzbar.pyzbar import decode
 import cv2
 import numpy as np
+import time  # THÊM THƯ VIỆN TIME ĐỂ ĐIỀU CHỈNH NHỊP THỞ CỦA API
 
 st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Cấu Trúc Cao", page_icon="🪪", layout="wide")
 st.title("🪪 Hệ thống Trích xuất & So khớp CCCD Hai Mặt Tự Động")
-st.markdown("Hệ thống thông minh kết hợp **Quét mã QR**, **Siêu AI Gemini 3.5 Flash** và thuật toán tự động gộp dòng dữ liệu.")
+st.markdown("Hệ thống thông minh kết hợp **Quét mã QR**, **Siêu AI Gemini 3.5 Flash** và thuật toán chống nghẽn mạng (Auto-Retry).")
 
 # CẤU HÌNH BẢO MẬT API KEY (CHẠY NGẦM):
 try:
@@ -41,10 +42,8 @@ if uploaded_files:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemini-3.5-flash')
             
-            # Két chứa dữ liệu thông minh để gom nhóm theo số CCCD/Hộ chiếu
-            # Cấu trúc: { "SỐ_CCCD": { data_hiện_tại } }
             matched_database = {}
-            unmatched_records = [] # Chứa các hồ sơ lỗi hoặc không xác định được số ID
+            unmatched_records = [] 
             
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -58,7 +57,7 @@ if uploaded_files:
                     extracted_data = {}
                     
                     # ---------------------------------------------------------
-                    # THAO TÁC 1: THỬ QUÉT MÃ QR TRƯỚC (NẾU LÀ CCCD MẶT TRƯỚC)
+                    # THAO TÁC 1: THỬ QUÉT MÃ QR TRƯỚC (NHANH VÀ MIỄN PHÍ HOÀN TOÀN)
                     # ---------------------------------------------------------
                     if "Căn cước" in loai_giay_to:
                         decoded_objects = decode(pil_img)
@@ -76,9 +75,12 @@ if uploaded_files:
                                     "Đặc điểm nhân dạng": "Nằm ở mặt sau"
                                 }
                                 qr_extracted = True
+                                
+                                # Chờ 2 giây để giao diện cập nhật cho đẹp
+                                time.sleep(2)
                     
                     # ---------------------------------------------------------
-                    # THAO TÁC 2: DÙNG GEMINI 3.5 FLASH NẾU QR THẤT BẠI HOẶC LÀ MẶT SAU
+                    # THAO TÁC 2: DÙNG GEMINI 3.5 FLASH (BẢO VỆ BẰNG AUTO-RETRY)
                     # ---------------------------------------------------------
                     if not qr_extracted:
                         if "Căn cước" in loai_giay_to:
@@ -100,7 +102,6 @@ if uploaded_files:
                             }
                             """
                         else:
-                            # Prompt dành cho Hộ chiếu
                             prompt = """
                             Hãy đọc hình ảnh Hộ chiếu này và trả về chuỗi JSON duy nhất:
                             {
@@ -114,36 +115,51 @@ if uploaded_files:
                             }
                             """
                         
-                        response = model.generate_content([prompt, pil_img])
-                        clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
-                        extracted_data = json.loads(clean_json)
-                    
+                        # VÒNG LẶP CHỐNG NGHẼN MẠNG (TỰ ĐỘNG CHỜ NẾU BỊ LỖI 429)
+                        success = False
+                        for attempt in range(3): # Cho phép thử tối đa 3 lần
+                            try:
+                                response = model.generate_content([prompt, pil_img])
+                                clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
+                                extracted_data = json.loads(clean_json)
+                                success = True
+                                break # Nếu API đọc thành công thì thoát vòng lặp Retry ngay
+                            except Exception as api_err:
+                                error_msg = str(api_err)
+                                # Bắt đúng lỗi 429 hoặc Quota để yêu cầu máy chủ "thở"
+                                if "429" in error_msg or "quota" in error_msg.lower():
+                                    status_text.text(f"⏳ Tốc độ quét quá nhanh! Hệ thống đang tự động chờ 45 giây làm mát API (Lần thử {attempt+1}/3)...")
+                                    time.sleep(45) # Ép máy chủ ngủ 45 giây như Google yêu cầu rồi mới chạy tiếp
+                                else:
+                                    raise api_err # Nếu là lỗi khác (như sai định dạng JSON) thì ném ra ngoài để báo lỗi
+                        
+                        if not success:
+                            raise Exception("Đã hết số lần thử lại tự động do máy chủ Google quá tải.")
+                        
+                        # Giãn cách nhẹ 3 giây giữa mỗi bức ảnh để API không bao giờ bị nghẽn lại
+                        time.sleep(3)
+
                     # ---------------------------------------------------------
                     # THAO TÁC 3: THUẬT TOÁN SO KHỚP & ĐỒNG BỘ HAI MẶT
                     # ---------------------------------------------------------
                     id_key = extracted_data.get("Số Định Danh / Hộ Chiếu", "Không tìm thấy")
                     
                     if id_key == "Không tìm thấy" or len(id_key) < 5:
-                        # Nếu không nhận diện được số ID, xếp tạm vào danh sách đẩy ra riêng
                         extracted_data["Tên File Gốc"] = up_file.name
                         unmatched_records.append(extracted_data)
                     else:
-                        # Nếu Số CCCD này ĐÃ TỒN TẠI trong két chứa (tức là mặt kia của thẻ đã được quét trước đó)
                         if id_key in matched_database:
-                            # Tiến hành đắp thêm dữ liệu trống vào
                             current_record = matched_database[id_key]
                             current_record["Tên File Mặt Sau"] = up_file.name if extracted_data.get("Loại mặt") == "Mặt sau" else current_record.get("Tên File Mặt Sau", "Chưa quét")
                             if extracted_data.get("Loại mặt") == "Mặt trước":
                                 current_record["Tên File Mặt Trước"] = up_file.name
                             
-                            # Cập nhật các trường thông tin dựa trên mặt vừa quét được
                             for field in ["Họ và tên", "Ngày tháng năm sinh", "Địa chỉ thường trú / Quốc tịch", "Ngày cấp", "Đặc điểm nhân dạng"]:
                                 if extracted_data.get(field) != "Không tìm thấy" and extracted_data.get(field) != "":
                                     current_record[field] = extracted_data.get(field)
                                     
                             current_record["Trạng Thái So Khớp"] = "✅ Khớp Thành Công 2 Mặt"
                         else:
-                            # Nếu Số CCCD này MỚI TINH, tạo một dòng bản ghi mới trong két chứa
                             matched_database[id_key] = {
                                 "Số Định Danh / Hộ Chiếu": id_key,
                                 "Tên File Mặt Trước": up_file.name if extracted_data.get("Loại mặt") == "Mặt trước" else "Chưa quét mặt trước",
@@ -161,7 +177,7 @@ if uploaded_files:
                 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            status_text.text("✅ Đã hoàn thành xử lý dữ liệu và chạy thuật toán đối chiếu!")
+            status_text.text("✅ Đã hoàn thành xử lý toàn bộ danh sách khách hàng!")
             
             # ---------------------------------------------------------
             # KHU VỰC 3: DỰNG BẢNG & ĐÓNG GÓI EXCEL CHUẨN CÔNG NGHIỆP
@@ -169,13 +185,11 @@ if uploaded_files:
             final_rows = []
             stt = 1
             
-            # Đổ dữ liệu từ két chứa thông minh ra các dòng Excel
             for key, data in matched_database.items():
                 data["STT"] = stt
                 final_rows.append(data)
                 stt += 1
                 
-            # Đính kèm thêm các file lỗi/thiếu ID (nếu có) xuống cuối bảng để không bỏ sót dữ liệu của khách
             for err_data in unmatched_records:
                 final_rows.append({
                     "STT": stt,
@@ -192,7 +206,6 @@ if uploaded_files:
                 stt += 1
                 
             if final_rows:
-                # Sắp xếp thứ tự cột trong Excel cho đẹp mắt và chuẩn nghiệp vụ lễ tân
                 df = pd.DataFrame(final_rows)
                 column_order = ["STT", "Số Định Danh / Hộ Chiếu", "Họ và tên", "Ngày tháng năm sinh", 
                                 "Địa chỉ thường trú / Quốc tịch", "Ngày cấp", "Đặc điểm nhân dạng", 
@@ -202,7 +215,6 @@ if uploaded_files:
                 st.subheader("📊 Bảng kết quả cấu trúc và đối sánh song biên")
                 st.dataframe(df, use_container_width=True)
                 
-                # Tạo file Excel nạp thẳng vào RAM bộ nhớ đệm
                 excel_buffer = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                     df.to_excel(writer, index=False, sheet_name='LưuTrúKháchHàng')
