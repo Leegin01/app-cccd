@@ -8,10 +8,14 @@ from pyzbar.pyzbar import decode
 import cv2
 import numpy as np
 import time  
+import pytesseract
+import re
+import tempfile
+import os
 
-st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Cấu Trúc Cao", page_icon="🪪", layout="wide")
-st.title("🪪 Hệ thống Trích xuất & So khớp CCCD Hai Mặt Tự Động")
-st.markdown("Hệ thống thông minh kết hợp **Quét mã QR**, **Siêu AI Gemini Pro (Phân tích chuyên sâu)** và thuật toán chống nghẽn mạng (Auto-Retry).")
+st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Đa Lớp", page_icon="🪪", layout="wide")
+st.title("🪪 Hệ thống Trích xuất & So khớp CCCD Tự Động (Dual-AI)")
+st.markdown("Kiến trúc 3 lớp: **Quét QR Code** ➔ **Gemini 3.5 Flash** ➔ Dự phòng tự động bằng **Tesseract AI**.")
 
 # CẤU HÌNH BẢO MẬT API KEY (CHẠY NGẦM):
 try:
@@ -19,30 +23,74 @@ try:
 except:
     api_key = ""
 
-# Lựa chọn loại giấy tờ cần quét cho đợt này
 loai_giay_to = st.selectbox(
     "📁 Chọn loại giấy tờ bạn chuẩn bị tải lên hàng loạt:",
     ("Căn cước công dân / VNeID (Quét hỗn hợp cả 2 mặt)", "Hộ chiếu (Passport - Việt Nam & Nước ngoài)")
 )
 
-# Giao diện tải nhiều tệp cùng lúc
 uploaded_files = st.file_uploader(
     "📸 Chọn hoặc kéo thả cùng lúc nhiều ảnh giấy tờ (Thoải mái thả cả mặt trước và mặt sau):", 
     type=['jpg', 'png', 'jpeg'], 
     accept_multiple_files=True
 )
 
+# ==========================================
+# CÁC HÀM XỬ LÝ ẢNH DÀNH CHO LỚP TESSERACT AI
+# ==========================================
+def order_points(pts):
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0], rect[2] = pts[np.argmin(s)], pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1], rect[3] = pts[np.argmin(diff)], pts[np.argmax(diff)]
+    return rect
+
+def perspective_transform(image, pts):
+    rect = order_points(pts)
+    (tl, tr, br, bl) = rect
+    width = max(int(np.linalg.norm(br - bl)), int(np.linalg.norm(tr - tl)))
+    height = max(int(np.linalg.norm(tr - br)), int(np.linalg.norm(tl - bl)))
+    dst = np.array([[0, 0], [width-1, 0], [width-1, height-1], [0, height-1]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    return cv2.warpPerspective(image, M, (width, height))
+
+def crop_and_align_card(image_path):
+    img = cv2.imread(image_path)
+    if img is None: return None
+    ratio = img.shape[0] / 500.0
+    orig = img.copy()
+    img_resized = cv2.resize(img, (int(img.shape[1]/ratio), 500))
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edged = cv2.Canny(gray, 75, 200)
+    cnts, _ = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+    for c in cnts:
+        approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
+        if len(approx) == 4:
+            return perspective_transform(orig, approx.reshape(4, 2) * ratio)
+    return orig 
+
+def enhance_image_for_tesseract(cv_img):
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    return clahe.apply(gray)
+
+# ==========================================
+# GIAO DIỆN CHÍNH & VÒNG LẶP XỬ LÝ
+# ==========================================
 if uploaded_files:
     st.info(f"🔗 Đã ghi nhận {len(uploaded_files)} tệp ảnh sẵn sàng xử lý.")
     
     if st.button("🚀 Bắt đầu trích xuất & So khớp dữ liệu", type="primary"):
         if not api_key:
-            st.error("🚨 Không tìm thấy API Key! Vui lòng cấu hình GEMINI_API_KEY trong phần quản lý Secrets của Streamlit Cloud.")
+            st.error("🚨 Không tìm thấy API Key! Vui lòng cấu hình GEMINI_API_KEY trong phần Secrets của Streamlit Cloud.")
         else:
             genai.configure(api_key=api_key)
             
-            # ĐÃ SỬA LỖI: Thay đổi tên định danh chính xác của dòng Pro phục vụ API v1/v1beta
-            model = genai.GenerativeModel('gemini-1.5-pro')
+            # 1. ĐÃ CẬP NHẬT MÔ HÌNH GEMINI 3.5 FLASH (Mô hình chính)
+            model = genai.GenerativeModel('gemini-3.5-flash')
             
             matched_database = {}
             unmatched_records = [] 
@@ -51,7 +99,7 @@ if uploaded_files:
             status_text = st.empty()
             
             for idx, up_file in enumerate(uploaded_files):
-                status_text.text(f"🔍 Gemini Pro đang phân tích tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
+                status_text.text(f"🔍 Đang phân tích tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
                 
                 try:
                     pil_img = Image.open(up_file)
@@ -59,7 +107,7 @@ if uploaded_files:
                     extracted_data = {}
                     
                     # ---------------------------------------------------------
-                    # THAO TÁC 1: THỬ QUÉT MÃ QR TRƯỚC (NHANH VÀ MIỄN PHÍ HOÀN TOÀN)
+                    # LỚP 1: THỬ QUÉT MÃ QR TRƯỚC (CHÍNH XÁC 100%)
                     # ---------------------------------------------------------
                     if "Căn cước" in loai_giay_to:
                         decoded_objects = decode(pil_img)
@@ -77,68 +125,96 @@ if uploaded_files:
                                     "Đặc điểm nhân dạng": "Nằm ở mặt sau"
                                 }
                                 qr_extracted = True
-                                
-                                # Chờ 2 giây để giao diện cập nhật cho đẹp
-                                time.sleep(2)
+                                time.sleep(1)
                     
                     # ---------------------------------------------------------
-                    # THAO TÁC 2: DÙNG GEMINI PRO (BẢO VỆ BẰNG AUTO-RETRY)
+                    # LỚP 2 & 3: GEMINI 3.5 FLASH VÀ ĐỘNG CƠ DỰ PHÒNG TESSERACT
                     # ---------------------------------------------------------
                     if not qr_extracted:
                         if "Căn cước" in loai_giay_to:
                             prompt = """
-                            Bạn là một hệ thống AI OCR nghiệp vụ khách sạn cao cấp. Hãy phân tích hình ảnh Căn cước công dân/VNeID này.
-                            Đây có thể là MẶT TRƯỚC hoặc MẶT SAU của thẻ.
-                            NHIỆM VỤ QUAN TRỌNG: 
-                            - Nếu là MẶT SAU, hãy nhìn vào hai dòng mã vạch ký tự MRZ ở dưới cùng (hoặc văn bản trên thẻ) để tìm ra dãy SỐ CCCD GỒM 12 CHỮ SỐ.
-                            - Tìm ngày cấp (ngày/tháng/năm ở mặt sau) và đặc điểm nhân dạng.
-                            Trả về kết quả DUY NHẤT dưới dạng một chuỗi JSON chuẩn định dạng sau, không giải thích gì thêm:
+                            Bạn là một hệ thống AI OCR nghiệp vụ khách sạn. Hãy phân tích hình ảnh Căn cước công dân/VNeID này.
+                            Nếu là MẶT SAU, hãy tìm SỐ CCCD GỒM 12 CHỮ SỐ ở dải mã vạch MRZ.
+                            Trả về kết quả DUY NHẤT dưới dạng một chuỗi JSON:
                             {
                                 "Loại mặt": "Điền 'Mặt trước' hoặc 'Mặt sau'",
-                                "Số Định Danh / Hộ Chiếu": "Điền 12 số CCCD tìm được (Kể cả tìm ở dòng MRZ mặt sau). Nếu không thấy ghi Không tìm thấy",
-                                "Họ và tên": "Điền họ tên IN HOA CÓ DẤU (nếu là mặt trước), mặt sau ghi Không tìm thấy",
-                                "Ngày tháng năm sinh": "Định dạng DD/MM/YYYY (nếu là mặt trước), mặt sau ghi Không tìm thấy",
-                                "Địa chỉ thường trú / Quốc tịch": "Địa chỉ cụ thể (nếu là mặt trước), mặt sau ghi Không tìm thấy",
-                                "Ngày cấp": "Định dạng DD/MM/YYYY (thường nằm ở mặt sau), mặt trước ghi Không tìm thấy",
-                                "Đặc điểm nhân dạng": "Ghi cụ thể dòng đặc điểm nhân dạng ở mặt sau, mặt trước ghi Không tìm thấy"
+                                "Số Định Danh / Hộ Chiếu": "12 số CCCD",
+                                "Họ và tên": "Họ tên IN HOA (mặt sau ghi Không tìm thấy)",
+                                "Ngày tháng năm sinh": "DD/MM/YYYY (mặt sau ghi Không tìm thấy)",
+                                "Địa chỉ thường trú / Quốc tịch": "Địa chỉ cụ thể (mặt sau ghi Không tìm thấy)",
+                                "Ngày cấp": "DD/MM/YYYY",
+                                "Đặc điểm nhân dạng": "Đặc điểm nhận dạng"
                             }
                             """
                         else:
                             prompt = """
-                            Hãy đọc hình ảnh Hộ chiếu này và trả về chuỗi JSON duy nhất:
+                            Hãy đọc hình ảnh Hộ chiếu này và trả về chuỗi JSON:
                             {
                                 "Loại mặt": "Hộ chiếu",
                                 "Số Định Danh / Hộ Chiếu": "Mã số hộ chiếu",
                                 "Họ và tên": "Họ và tên IN HOA",
                                 "Ngày tháng năm sinh": "DD/MM/YYYY",
                                 "Địa chỉ thường trú / Quốc tịch": "Tên quốc gia / Quốc tịch",
-                                "Ngày cấp": "Ngày cấp hộ chiếu DD/MM/YYYY",
+                                "Ngày cấp": "Ngày cấp DD/MM/YYYY",
                                 "Đặc điểm nhân dạng": "Không áp dụng"
                             }
                             """
                         
-                        # VÒNG LẶP CHỐNG NGHẼN MẠNG DÀNH CHO DÒNG PRO (TỰ ĐỘNG CHỜ NẾU BỊ LỖI 429)
-                        success = False
-                        for attempt in range(3): 
-                            try:
-                                response = model.generate_content([prompt, pil_img])
-                                clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
-                                extracted_data = json.loads(clean_json)
-                                success = True
-                                break 
-                            except Exception as api_err:
-                                error_msg = str(api_err)
-                                if "429" in error_msg or "quota" in error_msg.lower():
-                                    status_text.text(f"⏳ Mô hình Pro cần xử lý chậm lại! Đang tự động chờ 45 giây làm mát API (Lần thử {attempt+1}/3)...")
-                                    time.sleep(45) 
+                        use_tesseract = False # Biến cờ hiệu kích hoạt động cơ dự phòng
+                        
+                        # Cố gắng gọi Lớp 2 (Gemini 3.5 Flash)
+                        try:
+                            response = model.generate_content([prompt, pil_img])
+                            clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
+                            extracted_data = json.loads(clean_json)
+                        except Exception as api_err:
+                            error_msg = str(api_err).lower()
+                            # NẾU GEMINI BỊ NGHẼN MẠNG (429) HOẶC LỖI -> LẬP TỨC KÍCH HOẠT LỚP 3 (TESSERACT)
+                            status_text.text(f"⚠️ Gemini bận hoặc quá tải. Đang tự động chuyển sang Tesseract AI cho tệp {up_file.name}...")
+                            use_tesseract = True
+                        
+                        # 2. KHỞI CHẠY LỚP 3 (TESSERACT AI) NẾU CẦN THIẾT
+                        if use_tesseract:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
+                                f.write(up_file.getbuffer())
+                                temp_path = f.name
+                            
+                            aligned_img = crop_and_align_card(temp_path)
+                            if aligned_img is not None:
+                                enhanced_img = enhance_image_for_tesseract(aligned_img)
+                                tess_img = Image.fromarray(enhanced_img)
+                                
+                                raw_text = pytesseract.image_to_string(tess_img, lang='vie+eng', config=r'--oem 1 --psm 3')
+                                
+                                # Phân tích bằng Regex
+                                extracted_data = {
+                                    "Loại mặt": "Không xác định (Tesseract)",
+                                    "Số Định Danh / Hộ Chiếu": "Không tìm thấy",
+                                    "Họ và tên": "Không tìm thấy",
+                                    "Ngày tháng năm sinh": "Không tìm thấy",
+                                    "Địa chỉ thường trú / Quốc tịch": "Không tìm thấy",
+                                    "Ngày cấp": "Không tìm thấy",
+                                    "Đặc điểm nhân dạng": "Bóc tách dự phòng"
+                                }
+                                
+                                if "Căn cước" in loai_giay_to:
+                                    id_match = re.search(r"(?:\D|^)(\d[\s]*){12}(?:\D|$)", raw_text)
+                                    if id_match: extracted_data["Số Định Danh / Hộ Chiếu"] = re.sub(r"\s+", "", id_match.group())
+                                    dob_match = re.search(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
+                                    if dob_match: extracted_data["Ngày tháng năm sinh"] = dob_match.group()
+                                    name_match = re.search(r"(?:Họ và tên|name)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
+                                    if name_match: extracted_data["Họ và tên"] = name_match.group(1).strip()
                                 else:
-                                    raise api_err 
-                        
-                        if not success:
-                            raise Exception("Đã hết số lần thử lại tự động do máy chủ Google quá tải.")
-                        
-                        # Ép nghỉ 3 giây giữa mỗi đợt ảnh để bảo vệ Tokens phút của dòng Pro
-                        time.sleep(3)
+                                    passport_no_match = re.search(r"[A-Z][\s]*\d{7}", raw_text)
+                                    if passport_no_match: extracted_data["Số Định Danh / Hộ Chiếu"] = re.sub(r"\s+", "", passport_no_match.group())
+                                    dob_match = re.search(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
+                                    if dob_match: extracted_data["Ngày tháng năm sinh"] = dob_match.group()
+                                    name_match = re.search(r"(?:Họ và tên|name|Họ[\s\/]*Surname)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
+                                    if name_match: extracted_data["Họ và tên"] = name_match.group(1).strip()
+                                    
+                            os.remove(temp_path)
+
+                        time.sleep(1) # Giãn cách nhẹ 1 giây để an toàn bộ nhớ
 
                     # ---------------------------------------------------------
                     # THAO TÁC 3: THUẬT TOÁN SO KHỚP & ĐỒNG BỘ HAI MẶT
@@ -151,8 +227,8 @@ if uploaded_files:
                     else:
                         if id_key in matched_database:
                             current_record = matched_database[id_key]
-                            current_record["Tên File Mặt Sau"] = up_file.name if extracted_data.get("Loại mặt") == "Mặt sau" else current_record.get("Tên File Mặt Sau", "Chưa quét")
-                            if extracted_data.get("Loại mặt") == "Mặt trước":
+                            current_record["Tên File Mặt Sau"] = up_file.name if "Mặt sau" in extracted_data.get("Loại mặt", "") else current_record.get("Tên File Mặt Sau", "Chưa quét")
+                            if "Mặt trước" in extracted_data.get("Loại mặt", ""):
                                 current_record["Tên File Mặt Trước"] = up_file.name
                             
                             for field in ["Họ và tên", "Ngày tháng năm sinh", "Địa chỉ thường trú / Quốc tịch", "Ngày cấp", "Đặc điểm nhân dạng"]:
@@ -163,8 +239,8 @@ if uploaded_files:
                         else:
                             matched_database[id_key] = {
                                 "Số Định Danh / Hộ Chiếu": id_key,
-                                "Tên File Mặt Trước": up_file.name if extracted_data.get("Loại mặt") == "Mặt trước" else "Chưa quét mặt trước",
-                                "Tên File Mặt Sau": up_file.name if extracted_data.get("Loại mặt") == "Mặt sau" else "Chưa quét mặt sau",
+                                "Tên File Mặt Trước": up_file.name if "Mặt trước" in extracted_data.get("Loại mặt", "") else "Chưa quét",
+                                "Tên File Mặt Sau": up_file.name if "Mặt sau" in extracted_data.get("Loại mặt", "") else "Chưa quét",
                                 "Họ và tên": extracted_data.get("Họ và tên", "Không tìm thấy"),
                                 "Ngày tháng năm sinh": extracted_data.get("Ngày tháng năm sinh", "Không tìm thấy"),
                                 "Địa chỉ thường trú / Quốc tịch": extracted_data.get("Địa chỉ thường trú / Quốc tịch", "Không tìm thấy"),
@@ -178,10 +254,10 @@ if uploaded_files:
                 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            status_text.text("✅ Đã hoàn thành phân tích toàn bộ dữ liệu bằng Gemini Pro!")
+            status_text.text("✅ Đã hoàn thành phân tích toàn bộ dữ liệu!")
             
             # ---------------------------------------------------------
-            # KHU VỰC 3: DỰNG BẢNG & ĐÓNG GÓI EXCEL CHUẨN CÔNG NGHIỆP
+            # KHU VỰC ĐÓNG GÓI EXCEL
             # ---------------------------------------------------------
             final_rows = []
             stt = 1
@@ -225,7 +301,7 @@ if uploaded_files:
                 st.download_button(
                     label="📥 Bấm vào đây để tải file Excel đối sánh (.xlsx)",
                     data=excel_buffer.getvalue(),
-                    file_name="BaoCao_SoKhop_CCCD_GeminiPro.xlsx",
+                    file_name="BaoCao_SoKhop_DualAI.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
