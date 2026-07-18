@@ -8,10 +8,11 @@ import tempfile
 import os
 import pandas as pd
 import io
+from pyzbar.pyzbar import decode
 
 st.set_page_config(page_title="Hệ thống Quét Giấy Tờ Hàng Loạt", page_icon="🪪", layout="wide")
 st.title("🪪 Hệ thống Trích xuất Giấy tờ hàng loạt & Xuất Excel")
-st.markdown("Hệ thống sử dụng **AI Tesseract LSTM**, hỗ trợ tải lên nhiều tệp ảnh CCCD hoặc Hộ chiếu cùng lúc.")
+st.markdown("Hệ thống kết hợp **Giải mã QR Bộ Công An (Chính xác 100%)** và **AI Tesseract LSTM**.")
 
 loai_giay_to = st.selectbox(
     "📁 Chọn loại giấy tờ bạn chuẩn bị tải lên hàng loạt:",
@@ -19,7 +20,7 @@ loai_giay_to = st.selectbox(
 )
 
 # ==========================================
-# KHU VỰC 1: XỬ LÝ ẢNH BẰNG OPENCV
+# KHU VỰC 1: XỬ LÝ ẢNH BẰNG OPENCV & TESSERACT (GIỮ NGUYÊN)
 # ==========================================
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
@@ -40,19 +41,15 @@ def perspective_transform(image, pts):
 
 def crop_and_align_card(image_path):
     img = cv2.imread(image_path)
-    if img is None:
-        return None
+    if img is None: return None
     ratio = img.shape[0] / 500.0
     orig = img.copy()
     img_resized = cv2.resize(img, (int(img.shape[1]/ratio), 500))
-    
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(gray, 75, 200)
-    
     cnts, _ = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
-    
     for c in cnts:
         approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
         if len(approx) == 4:
@@ -60,16 +57,10 @@ def crop_and_align_card(image_path):
     return orig 
 
 def enhance_image_for_tesseract(cv_img):
-    """
-    Đã đổi sang thuật toán CLAHE: Phù hợp hơn với ảnh chụp điện thoại
-    có ánh sáng phức tạp, tránh việc ảnh bị bệt đen toàn bộ.
-    """
     gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-    
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(gray)
-    return enhanced
+    return clahe.apply(gray)
 
 # ==========================================
 # KHU VỰC 2: GIAO DIỆN TẢI NHIỀU FILE & XỬ LÝ LẶP
@@ -90,71 +81,95 @@ if uploaded_files:
         
         for idx, up_file in enumerate(uploaded_files):
             status_text.text(f"🔄 Đang xử lý tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
+            row_data = {
+                "STT": idx + 1,
+                "Tên File Ảnh": up_file.name,
+                "Loại Giấy Tờ": loai_giay_to,
+                "Số Định Danh / Hộ Chiếu": "Không tìm thấy",
+                "Họ và tên": "Không tìm thấy",
+                "Ngày tháng năm sinh": "Không tìm thấy",
+                "Địa chỉ thường trú / Quốc tịch": "Không tìm thấy",
+                "Phương pháp xử lý": "Thất bại",
+                "Văn bản thô (AI nhìn thấy)": ""
+            }
             
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
-                    f.write(up_file.getbuffer())
-                    temp_path = f.name
+                # Load ảnh gốc để xử lý
+                original_pil_img = Image.open(up_file)
+                qr_extracted = False
                 
-                aligned_img = crop_and_align_card(temp_path)
-                if aligned_img is None:
-                    os.remove(temp_path)
-                    continue
-                    
-                enhanced_gray_img = enhance_image_for_tesseract(aligned_img)
-                pil_img = Image.fromarray(enhanced_gray_img)
-                
-                custom_config = r'--oem 1 --psm 3'
-                raw_text = pytesseract.image_to_string(pil_img, lang='vie+eng', config=custom_config)
-                
-                # Gom text thô thành 1 dòng để dễ đọc trên bảng
-                clean_raw_text = raw_text.replace('\n', ' | ').strip()
-                
-                row_data = {
-                    "STT": idx + 1,
-                    "Tên File Ảnh": up_file.name,
-                    "Loại Giấy Tờ": loai_giay_to,
-                    "Số Định Danh / Hộ Chiếu": "Không tìm thấy",
-                    "Họ và tên": "Không tìm thấy",
-                    "Ngày tháng năm sinh": "Không tìm thấy",
-                    "Địa chỉ thường trú / Quốc tịch": "Không tìm thấy",
-                    "Văn bản thô (AI nhìn thấy)": clean_raw_text
-                }
-                
-                # BỘ LỌC REGEX ĐÃ ĐƯỢC LÀM MỀM ĐỂ BẮT DỮ LIỆU TỐT HƠN
+                # BƯỚC 1: CỐ GẮNG ĐỌC MÃ QR TRƯỚC (NẾU LÀ CCCD)
                 if loai_giay_to == "Căn cước công dân / VNeID":
-                    # Tìm 12 số, cho phép có khoảng trắng xen giữa
-                    id_match = re.search(r"(?:\D|^)(\d[\s]*){12}(?:\D|$)", raw_text)
-                    if id_match: 
-                        row_data["Số Định Danh / Hộ Chiếu"] = re.sub(r"\s+", "", id_match.group())
+                    decoded_objects = decode(original_pil_img)
+                    if decoded_objects:
+                        qr_data = decoded_objects[0].data.decode('utf-8')
+                        # Cấu trúc mã QR Bộ Công An: Số CCCD|Số CMND cũ|Họ tên|Ngày sinh|Giới tính|Địa chỉ|Ngày cấp
+                        parts = qr_data.split('|')
+                        if len(parts) >= 6:
+                            row_data["Số Định Danh / Hộ Chiếu"] = parts[0]
+                            row_data["Họ và tên"] = parts[2]
+                            
+                            # Xử lý chuỗi ngày sinh (VD: 01011990 -> 01/01/1990)
+                            dob_raw = parts[3]
+                            if len(dob_raw) == 8:
+                                row_data["Ngày tháng năm sinh"] = f"{dob_raw[:2]}/{dob_raw[2:4]}/{dob_raw[4:]}"
+                            else:
+                                row_data["Ngày tháng năm sinh"] = dob_raw
+                                
+                            row_data["Địa chỉ thường trú / Quốc tịch"] = parts[5]
+                            row_data["Phương pháp xử lý"] = "Đọc mã QR (Đúng 100%)"
+                            row_data["Văn bản thô (AI nhìn thấy)"] = "Bóc tách trực tiếp từ mã hóa của BCA."
+                            qr_extracted = True
 
-                    dob_match = re.search(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
-                    if dob_match: row_data["Ngày tháng năm sinh"] = dob_match.group()
+                # BƯỚC 2: NẾU KHÔNG CÓ MÃ QR, TỰ ĐỘNG CHUYỂN SANG DÙNG TESSERACT OCR NHƯ CŨ
+                if not qr_extracted:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
+                        f.write(up_file.getbuffer())
+                        temp_path = f.name
+                    
+                    aligned_img = crop_and_align_card(temp_path)
+                    if aligned_img is not None:
+                        enhanced_gray_img = enhance_image_for_tesseract(aligned_img)
+                        pil_img = Image.fromarray(enhanced_gray_img)
+                        
+                        custom_config = r'--oem 1 --psm 3'
+                        raw_text = pytesseract.image_to_string(pil_img, lang='vie+eng', config=custom_config)
+                        clean_raw_text = raw_text.replace('\n', ' | ').strip()
+                        row_data["Văn bản thô (AI nhìn thấy)"] = clean_raw_text
+                        row_data["Phương pháp xử lý"] = "Tesseract OCR"
+                        
+                        if loai_giay_to == "Căn cước công dân / VNeID":
+                            id_match = re.search(r"(?:\D|^)(\d[\s]*){12}(?:\D|$)", raw_text)
+                            if id_match: row_data["Số Định Danh / Hộ Chiếu"] = re.sub(r"\s+", "", id_match.group())
 
-                    name_match = re.search(r"(?:Họ và tên|name)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
-                    if name_match: row_data["Họ và tên"] = name_match.group(1).strip()
+                            dob_match = re.search(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
+                            if dob_match: row_data["Ngày tháng năm sinh"] = dob_match.group()
 
-                    addr_match = re.search(r"(?:thường trú|residence)[:\-\s]*([^\n]+)", raw_text, re.IGNORECASE)
-                    if addr_match: row_data["Địa chỉ thường trú / Quốc tịch"] = addr_match.group(1).strip()
-                else:
-                    passport_no_match = re.search(r"[A-Z][\s]*\d{7}", raw_text)
-                    if passport_no_match: 
-                        row_data["Số Định Danh / Hộ Chiếu"] = re.sub(r"\s+", "", passport_no_match.group())
-                    
-                    dob_match = re.search(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
-                    if dob_match: row_data["Ngày tháng năm sinh"] = dob_match.group()
-                    
-                    name_match = re.search(r"(?:Họ và tên|name|Họ[\s\/]*Surname)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
-                    if name_match: row_data["Họ và tên"] = name_match.group(1).strip()
-                    
-                    nat_match = re.search(r"(?:Quốc tịch|Nationality)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
-                    if nat_match: row_data["Địa chỉ thường trú / Quốc tịch"] = nat_match.group(1).strip()
+                            name_match = re.search(r"(?:Họ và tên|name)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
+                            if name_match: row_data["Họ và tên"] = name_match.group(1).strip()
+
+                            addr_match = re.search(r"(?:thường trú|residence)[:\-\s]*([^\n]+)", raw_text, re.IGNORECASE)
+                            if addr_match: row_data["Địa chỉ thường trú / Quốc tịch"] = addr_match.group(1).strip()
+                        else:
+                            passport_no_match = re.search(r"[A-Z][\s]*\d{7}", raw_text)
+                            if passport_no_match: row_data["Số Định Danh / Hộ Chiếu"] = re.sub(r"\s+", "", passport_no_match.group())
+                            
+                            dob_match = re.search(r"\d{2}[/-]\d{2}[/-]\d{4}", raw_text)
+                            if dob_match: row_data["Ngày tháng năm sinh"] = dob_match.group()
+                            
+                            name_match = re.search(r"(?:Họ và tên|name|Họ[\s\/]*Surname)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
+                            if name_match: row_data["Họ và tên"] = name_match.group(1).strip()
+                            
+                            nat_match = re.search(r"(?:Quốc tịch|Nationality)[:\-\s]*([A-ZÀ-Ỹ\s]+)", raw_text, re.IGNORECASE)
+                            if nat_match: row_data["Địa chỉ thường trú / Quốc tịch"] = nat_match.group(1).strip()
+                            
+                    os.remove(temp_path)
 
                 all_results.append(row_data)
-                os.remove(temp_path)
                 
             except Exception as e:
-                st.error(f"Lỗi khi xử lý file {up_file.name}: {e}")
+                row_data["Văn bản thô (AI nhìn thấy)"] = f"Lỗi: {e}"
+                all_results.append(row_data)
             
             progress_bar.progress((idx + 1) / len(uploaded_files))
         
