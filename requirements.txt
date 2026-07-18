@@ -1,8 +1,2 @@
 streamlit
-opencv-python-headless
-numpy
-Pillow>=10.4.0
-torch
-torchvision
-PyYAML
-vietocr
+requests
