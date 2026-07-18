@@ -7,10 +7,9 @@ import json
 
 st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Gemini AI", page_icon="🪪", layout="wide")
 st.title("🪪 Hệ thống Trích xuất Giấy tờ Hàng loạt bằng Gemini AI")
-st.markdown("Ứng dụng sử dụng lõi công nghệ **Gemini 1.5 Flash**, đảm bảo độ chính xác tuyệt đối như giao diện Gemini Chat.")
+st.markdown("Ứng dụng sử dụng lõi công nghệ tân tiến nhất **Gemini 3.5 Flash**, tối ưu hóa tốc độ xử lý hàng loạt và độ chính xác.")
 
 # CẤU HÌNH BẢO MẬT API KEY:
-# Hệ thống sẽ tự động lấy Key từ két sắt Secrets nếu em đã cấu hình ở bước trước.
 try:
     default_api_key = st.secrets["GEMINI_API_KEY"]
 except:
@@ -41,7 +40,9 @@ if uploaded_files:
         else:
             # Kích hoạt kết nối đến siêu máy tính Google Gemini
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # ĐÃ CẬP NHẬT: Cấu hình mô hình thế hệ mới nhất Gemini 3.5 Flash
+            model = genai.GenerativeModel('gemini-3.5-flash')
             
             all_results = [] # Mảng lưu dữ liệu tổng hợp để xuất Excel
             
@@ -50,7 +51,7 @@ if uploaded_files:
             status_text = st.empty()
             
             for idx, up_file in enumerate(uploaded_files):
-                status_text.text(f"🤖 Gemini đang đọc và phân tích tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
+                status_text.text(f"🤖 Gemini 3.5 Flash đang đọc và phân tích tệp ({idx + 1}/{len(uploaded_files)}): {up_file.name}")
                 
                 try:
                     # Mở ảnh trực tiếp bằng thư viện Pillow truyền thẳng cho Gemini
@@ -89,7 +90,7 @@ if uploaded_files:
                     raw_text = response.text.strip()
                     clean_json = raw_text.replace("```json", "").replace("```", "").strip()
                     
-                    # Chuyển chuỗi JSON thành Dictionary Python trong 1 nốt nhạc
+                    # Chuyển chuỗi JSON thành Dictionary Python
                     data_dict = json.loads(clean_json)
                     
                     # Đồng bộ dữ liệu xếp vào hàng dòng của bảng Excel
@@ -116,9 +117,9 @@ if uploaded_files:
                 # Cập nhật % thanh tiến trình chạy
                 progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            status_text.text("✅ Đã hoàn thành trích xuất dữ liệu bằng trí tuệ nhân tạo Gemini!")
+            status_text.text("✅ Đã hoàn thành trích xuất dữ liệu bằng trí tuệ nhân tạo Gemini 3.5 Flash!")
             
-            # hiển thị dữ liệu và đóng gói file Excel tải về
+            # Hiển thị dữ liệu và đóng gói file Excel tải về
             if all_results:
                 df = pd.DataFrame(all_results)
                 st.subheader("📊 Bảng kết quả trích xuất tổng hợp dữ liệu")
