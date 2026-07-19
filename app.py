@@ -16,7 +16,7 @@ import base64
 
 st.set_page_config(page_title="Hệ thống Scan Giấy Tờ Tối Ưu Pro", page_icon="🪪", layout="wide")
 st.title("🪪 Hệ thống Trích xuất & So khớp CCCD Tự Động")
-st.markdown("Kiến trúc Đa Lõi (Bản tối ưu CPU): **QR Code** ➔ **[Gemini 3.5 Flash / GPT-4o / DeepSeek]** ➔ Dự phòng **EasyOCR (Lazy Load)**.")
+st.markdown("Kiến trúc Đa Lõi: **QR Code** ➔ **[Đám Mây: Gemini/GPT/DeepSeek]** ➔ **[Nội Bộ: EasyOCR/PaddleOCR]**.")
 
 # CẤU HÌNH BẢO MẬT API KEY TỪ KÉT SẮT SECRETS RUNTIME:
 try:
@@ -32,7 +32,11 @@ except:
 col1, col2 = st.columns(2)
 with col1:
     ai_engine = st.radio("🧠 Chọn động cơ Trí tuệ nhân tạo (AI Engine):", 
-                         ("Google Gemini 3.5 Flash (Siêu tốc)", "OpenAI GPT-4o (Cần có số dư API)", "DeepSeek AI (Tối ưu chi phí)"))
+                         ("Google Gemini 3.5 Flash (Siêu tốc)", 
+                          "OpenAI GPT-4o (Cần có số dư API)", 
+                          "DeepSeek AI (Tối ưu chi phí)",
+                          "PaddleOCR Offline (Siêu chuẩn tiếng Việt, Không giới hạn)",
+                          "EasyOCR Offline (Dự phòng cơ bản, Không giới hạn)"))
 with col2:
     loai_giay_to = st.selectbox("📁 Chọn loại giấy tờ nghiệp vụ lễ tân:",
                                 ("Căn cước công dân / VNeID (Quét hỗn hợp 2 mặt)", "Hộ chiếu (Passport - Việt Nam & Nước ngoài)"))
@@ -47,7 +51,6 @@ uploaded_files = st.file_uploader(
 # KHU VỰC 1: CÁC HÀM XỬ LÝ ẢNH & ĐỊNH DẠNG DỮ LIỆU
 # ==========================================
 def encode_image_to_base64(image_file):
-    """Mã hóa ảnh cấu trúc dữ liệu sang dạng Base64 phục vụ cho luồng Vision API"""
     return base64.b64encode(image_file.getvalue()).decode('utf-8')
 
 # Hàm xử lý EasyOCR tối ưu CPU (Chỉ nạp khi thực sự cần thiết)
@@ -57,6 +60,20 @@ def run_easyocr_fallback(image_path):
     results = reader.readtext(image_path, detail=0)
     return "\n".join(results)
 
+# Hàm xử lý PaddleOCR (Đọc tiếng Việt siêu chuẩn, Lazy Load)
+def run_paddleocr_fallback(image_path):
+    from paddleocr import PaddleOCR
+    # Cấu hình OCR cho tiếng Việt, không dùng GPU để tương thích mọi máy chủ, tắt log rác
+    ocr = PaddleOCR(use_angle_cls=True, lang='vi', use_gpu=False, show_log=False)
+    result = ocr.ocr(image_path, cls=True)
+    
+    extracted_text = []
+    # PaddleOCR trả về cấu trúc mảng khá sâu, cần bóc tách text
+    if result and result[0]:
+        for line in result[0]:
+            extracted_text.append(line[1][0])
+    return "\n".join(extracted_text)
+
 # ==========================================
 # KHU VỰC 2: TIẾN TRÌNH VÒNG LẶP VÀ CƠ CHẾ CHUYỂN MẠCH AI
 # ==========================================
@@ -64,7 +81,7 @@ if uploaded_files:
     st.info(f"🔗 Hệ thống ghi nhận {len(uploaded_files)} tệp ảnh sẵn sàng đưa vào tiến trình.")
     
     if st.button("🚀 Bắt đầu trích xuất & So khớp dữ liệu", type="primary"):
-        # Kiểm tra điều kiện API Key
+        # Kiểm tra điều kiện API Key cho các mô hình Đám mây
         if "Gemini" in ai_engine and not gemini_api_key:
             st.error("🚨 Không tìm thấy cấu hình Gemini API Key trong Secrets!")
             st.stop()
@@ -75,12 +92,12 @@ if uploaded_files:
             st.error("🚨 Không tìm thấy cấu hình DeepSeek API Key trong Secrets!")
             st.stop()
             
-        # Khởi tạo client kết nối (Cập nhật chuẩn SDK mới của Google)
+        # Khởi tạo client kết nối cho các dịch vụ đám mây
         if "Gemini" in ai_engine:
             client_gemini = genai.Client(api_key=gemini_api_key)
         elif "GPT-4o" in ai_engine:
             client_openai = OpenAI(api_key=openai_api_key)
-        else:
+        elif "DeepSeek" in ai_engine:
             client_deepseek = OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com")
             
         matched_database = {}
@@ -119,80 +136,91 @@ if uploaded_files:
                             time.sleep(0.1)
                 
                 # ---------------------------------------------------------
-                # LỚP PHÒNG THỦ 2: SỬ DỤNG SIÊU AI ĐÁM MÂY
+                # LỚP PHÒNG THỦ 2: CHẠY AI THEO LỰA CHỌN CỦA NGƯỜI DÙNG
                 # ---------------------------------------------------------
                 if not qr_extracted:
-                    prompt = """
-                    Bạn là một AI OCR nghiệp vụ. Hãy phân tích hình ảnh ảnh giấy tờ (CCCD/Hộ chiếu) này.
-                    NẾU LÀ MẶT SAU CCCD, nhiệm vụ tối quan trọng là tìm dãy SỐ CCCD CÓ 12 CHỮ SỐ ở dải ký tự mã vạch MRZ hoặc văn bản.
-                    Trả về DUY NHẤT một chuỗi định dạng JSON theo cấu trúc phẳng dưới đây, tuyệt đối không giải thích hay thêm ký tự thừa:
-                    {
-                        "Loại mặt": "Điền cụ thể 'Mặt trước' hoặc 'Mặt sau' hoặc 'Hộ chiếu'",
-                        "Số Định Danh / Hộ Chiếu": "Ghi cụ thể 12 số CCCD hoặc Số Hộ Chiếu tìm được",
-                        "Họ và tên": "Ghi họ tên viết bằng CHỮ IN HOA CÓ DẤU đầy đủ",
-                        "Ngày tháng năm sinh": "Định dạng ngày sinh DD/MM/YYYY",
-                        "Địa chỉ thường trú / Quốc tịch": "Địa chỉ nơi thường trú hoặc tên Quốc tịch",
-                        "Ngày cấp": "Định dạng ngày cấp giấy tờ DD/MM/YYYY",
-                        "Đặc điểm nhân dạng": "Ghi cụ thể dòng đặc điểm nhân dạng"
-                    }
-                    """
+                    use_offline_fallback = False
                     
-                    use_easyocr_fallback = False
-                    
-                    try:
-                        if "Gemini" in ai_engine:
-                            # CẬP NHẬT: Gọi trực tiếp mô hình Gemini 3.5 Flash siêu tốc
-                            response = client_gemini.models.generate_content(
-                                model='gemini-3.5-flash', 
-                                contents=[prompt, pil_img]
-                            )
-                            clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
-                            extracted_data = json.loads(clean_json)
-                        elif "GPT-4o" in ai_engine:
-                            base64_image = encode_image_to_base64(up_file)
-                            response = client_openai.chat.completions.create(
-                                model="gpt-4o",
-                                messages=[
-                                    {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
-                                ],
-                                response_format={ "type": "json_object" }
-                            )
-                            clean_json = response.choices[0].message.content.strip()
-                            extracted_data = json.loads(clean_json)
-                        else:
-                            base64_image = encode_image_to_base64(up_file)
-                            response = client_deepseek.chat.completions.create(
-                                model="deepseek-chat",
-                                messages=[
-                                    {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
-                                ],
-                                response_format={ "type": "json_object" }
-                            )
-                            clean_json = response.choices[0].message.content.strip()
-                            extracted_data = json.loads(clean_json)
-                            
-                    except Exception as api_err:
-                        status_text.text(f"⚠️ {ai_engine} gặp sự cố kết nối. Đang nạp EasyOCR dự phòng...")
-                        use_easyocr_fallback = True
+                    # NẾU CHỌN OFFLINE LÀM ĐỘNG CƠ CHÍNH -> KÍCH HOẠT NGAY LẬP TỨC
+                    if "Offline" in ai_engine:
+                        use_offline_fallback = True
+                    else:
+                        prompt = """
+                        Bạn là một AI OCR nghiệp vụ. Hãy phân tích hình ảnh ảnh giấy tờ (CCCD/Hộ chiếu) này.
+                        NẾU LÀ MẶT SAU CCCD, nhiệm vụ tối quan trọng là tìm dãy SỐ CCCD CÓ 12 CHỮ SỐ ở dải ký tự mã vạch MRZ hoặc văn bản.
+                        Trả về DUY NHẤT một chuỗi định dạng JSON theo cấu trúc phẳng dưới đây, tuyệt đối không giải thích hay thêm ký tự thừa:
+                        {
+                            "Loại mặt": "Điền cụ thể 'Mặt trước' hoặc 'Mặt sau' hoặc 'Hộ chiếu'",
+                            "Số Định Danh / Hộ Chiếu": "Ghi cụ thể 12 số CCCD hoặc Số Hộ Chiếu tìm được",
+                            "Họ và tên": "Ghi họ tên viết bằng CHỮ IN HOA CÓ DẤU đầy đủ",
+                            "Ngày tháng năm sinh": "Định dạng ngày sinh DD/MM/YYYY",
+                            "Địa chỉ thường trú / Quốc tịch": "Địa chỉ nơi thường trú hoặc tên Quốc tịch",
+                            "Ngày cấp": "Định dạng ngày cấp giấy tờ DD/MM/YYYY",
+                            "Đặc điểm nhân dạng": "Ghi cụ thể dòng đặc điểm nhân dạng"
+                        }
+                        """
+                        try:
+                            if "Gemini" in ai_engine:
+                                response = client_gemini.models.generate_content(
+                                    model='gemini-3.5-flash', 
+                                    contents=[prompt, pil_img]
+                                )
+                                clean_json = response.text.strip().replace("```json", "").replace("```", "").strip()
+                                extracted_data = json.loads(clean_json)
+                            elif "GPT-4o" in ai_engine:
+                                base64_image = encode_image_to_base64(up_file)
+                                response = client_openai.chat.completions.create(
+                                    model="gpt-4o",
+                                    messages=[
+                                        {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
+                                    ],
+                                    response_format={ "type": "json_object" }
+                                )
+                                clean_json = response.choices[0].message.content.strip()
+                                extracted_data = json.loads(clean_json)
+                            elif "DeepSeek" in ai_engine:
+                                base64_image = encode_image_to_base64(up_file)
+                                response = client_deepseek.chat.completions.create(
+                                    model="deepseek-chat",
+                                    messages=[
+                                        {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
+                                    ],
+                                    response_format={ "type": "json_object" }
+                                )
+                                clean_json = response.choices[0].message.content.strip()
+                                extracted_data = json.loads(clean_json)
+                                
+                        except Exception as api_err:
+                            status_text.text(f"⚠️ Động cơ đám mây gặp sự cố kết nối. Đang nạp mô hình Offline dự phòng...")
+                            use_offline_fallback = True
                     
                     # ---------------------------------------------------------
-                    # LỚP PHÒNG THỦ 3: EASYOCR (LAZY LOAD - TỐI ƯU CPU)
+                    # THỰC THI LÕI OFFLINE (PADDLE_OCR HOẶC EASY_OCR - KHÔNG GIỚI HẠN)
                     # ---------------------------------------------------------
-                    if use_easyocr_fallback:
+                    if use_offline_fallback:
                         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
                             f.write(up_file.getbuffer())
                             temp_path = f.name
                         
-                        raw_text = run_easyocr_fallback(temp_path)
+                        engine_name = ""
+                        # Nếu người dùng chọn đích danh PaddleOCR hoặc rơi vào trạng thái dự phòng mặc định thì ưu tiên PaddleOCR
+                        if "PaddleOCR" in ai_engine or ai_engine not in ["PaddleOCR Offline (Siêu chuẩn tiếng Việt, Không giới hạn)", "EasyOCR Offline (Dự phòng cơ bản, Không giới hạn)"]:
+                            status_text.text(f"🚀 Kích hoạt PaddleOCR cho tệp {up_file.name}...")
+                            raw_text = run_paddleocr_fallback(temp_path)
+                            engine_name = "PaddleOCR"
+                        else:
+                            status_text.text(f"🚀 Kích hoạt EasyOCR cho tệp {up_file.name}...")
+                            raw_text = run_easyocr_fallback(temp_path)
+                            engine_name = "EasyOCR"
                         
                         extracted_data = {
-                            "Loại mặt": "Không xác định (EasyOCR)",
+                            "Loại mặt": f"Không xác định ({engine_name})",
                             "Số Định Danh / Hộ Chiếu": "Không tìm thấy",
                             "Họ và tên": "Không tìm thấy",
                             "Ngày tháng năm sinh": "Không tìm thấy",
                             "Địa chỉ thường trú / Quốc tịch": "Không tìm thấy",
                             "Ngày cấp": "Không tìm thấy",
-                            "Đặc điểm nhân dạng": "Trích xuất cục bộ"
+                            "Đặc điểm nhân dạng": f"Trích xuất cục bộ bằng {engine_name}"
                         }
                         
                         if "Căn cước" in loai_giay_to:
@@ -253,7 +281,7 @@ if uploaded_files:
             
             progress_bar.progress((idx + 1) / len(uploaded_files))
         
-        status_text.text(f"✅ Đã hoàn thành quy trình trích xuất dữ liệu bằng {ai_engine}!")
+        status_text.text(f"✅ Đã hoàn thành quy trình trích xuất dữ liệu!")
         
         # ---------------------------------------------------------
         # KHU VỰC 3: DỰNG BẢNG VÀ ĐÓNG GÓI EXCEL REPORT
@@ -300,7 +328,7 @@ if uploaded_files:
             st.download_button(
                 label="📥 Bấm vào đây để tải file Excel đối sánh (.xlsx)",
                 data=excel_buffer.getvalue(),
-                file_name="BaoCao_SoKhop_ToiUu.xlsx",
+                file_name="BaoCao_SoKhop_PaddleOCR.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )
