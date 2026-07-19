@@ -8,3 +8,5 @@ pyzbar
 opencv-python-headless
 pytesseract
 easyocr
+paddleocr
+paddlepaddle
